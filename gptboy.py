@@ -33,7 +33,7 @@ WINDOW_EVENTS = {
 
 ALL_ACTIONS = list(WINDOW_EVENTS.keys())
 
-INITIAL_PROMPT = f"These are two images of of Pokemon: Crystal Version. Upon showing you the first image, I asked to provide the next step for the game, and a list of button inputs on the next line. You responded The first image shows the  Use 2 lines of text. On line 1, describe what you see and where you believe you are, identify the next course of action that should be taken based on walkthroughs of Pokemon: Crystal Version. On line 2, return a list of inputs to press on the gameboy separated by a comma, up to 30 inputs. Use the inputs on line 2 to perform the action stated on line 1. The inputs could be one of the following AND ONLY THE FOLLOWING: {ALL_ACTIONS}. On line 2, DO NOT RESPOND WITH ANYTHING ELSE OR INPUT WILL BE DISCARDED. DO NOT PREFACE WITH \"INTENT\" OR \"INPUTS\" or \"ACTIONS\". When you see a textbox, only press A once. On line 1, read all text in the screenshot. On line 1, describe every object you see in the game world and their location relative to the player character. YOU MUST use both lines or your input will be discarded."
+INITIAL_PROMPT = "You are a superintelligent game playing program. I will send you an image of Pokemon: Red Version. Please respond with 2 lines of text. On line 1, describe what you see and where you believe you are, identify the next course of action that should be taken based on walkthroughs of Pokemon: Red Version. On line 2, return a list of inputs to press on the gameboy separated by a comma, up to 30 inputs. Use the inputs on line 2 to perform the action stated on line 1. The inputs could be one of the following AND ONLY THE FOLLOWING: Start, Select, A, B, Up, Down, Right, and Left. On line 2, DO NOT RESPOND WITH ANYTHING ELSE OR INPUT WILL BE DISCARDED. Valid inputs will be inserted into the game via a program. When you see a textbox, only press A once. When you see an option, always choose a custom name. When you see a keypad, name everything after Halo. On line 1, read all text in the screenshot. On line 1, describe every object you see in the game world and their location relative to the player character. YOU MUST use both lines or your input will be discarded. DO NOT PREFACE WITH \"INTENT\" OR \"INPUTS\" or \"ACTIONS\", \"Line 1:\" or \"Line 2:\""
 
 def image_to_bytes(image):
     jpeg_mafia = image.convert("RGB")
@@ -51,7 +51,7 @@ def compare_base64(base64_str1, base64_str2):
     return decoded_str1 == decoded_str2
 
 class GptBoy:
-    def __init__(self, open_ai_key: str, rom_path: str = "pokemonred.gb", save_path: str = "gptboy.state",
+    def __init__(self, open_ai_key: str, rom_path: str = "pokemonred.gb", game_title: str = "Pokemon: Red Version", save_path: str = "gptboy.state",
                  debug: bool = False, sound: bool = True):
         # initialize gptboy params
         self.debug = debug
@@ -59,7 +59,7 @@ class GptBoy:
         # Initialize openai
         self.open_ai = OpenAI(api_key=open_ai_key)
 
-        # Initialize state
+        # Initialize gptboy state
         self.current_tick: int = 0
         self.running: bool = False
         self.requests = []
@@ -70,6 +70,7 @@ class GptBoy:
         self.speaking = False
 
         # Initialize emulator
+        self.game_title = game_title
         self.save_path = save_path
         self.load_context()
         self.start_emulator(rom_path=rom_path, sound=sound)
@@ -149,58 +150,97 @@ class GptBoy:
             # raise KeyError("Input {button_text} not found")
             print("ERROR Button not found: " + str(button_text))
 
-    def prompt_gpt(self):
-        pil_image = self.emulator.screen_image()
+    def prompt_gpt_text(self, message):
+        try:
+            response = self.open_ai.chat.completions.create(
+                model="gpt-4-1106-preview",
+                messages=[{
+                        "role": "user",
+                        "content": message
+                    }],
+                max_tokens=200,
+            )
+            gpt_response_text = response.choices[0].message.content
+            return gpt_response_text
+        except Exception as other_error:
+            self.log(other_error)            
+
+    def prompt_gpt_image(self):
         encoded_image = image_to_bytes(self.emulator.screen_image())
         # bad_actions = self.repeated_actions()
         # actions_list = [x for x in ALL_ACTIONS if x not in bad_actions]
         actions_list = [x for x in ALL_ACTIONS]
-
-        try:
-            message = "With the context of the previous actions and images, re adjust your goal and approach to continue playing the game with the same method. Learn from your mistakes and failures, and analyze why what you did either worked or didnt in the Intent section. Then use the Intent to inform your Actions. In the intent, describe whether the previous step functioned as intended. Did the screen change? If not, try something else. For instance, if you believed going downstairs was to the left, and that didnt work, then that assumption was wrong. Ensure you are doing through analysis of your decisions and whether they work. Get out of the bedroom by going to the top right"
-            if len(self.gpt_messages) < 1:
-                message = INITIAL_PROMPT
+        if len(self.gpt_messages) >= 10:
+            self.gpt_messages.pop(1)
+        try:    
+            message = "Continue with your previous goal with a new intent and action. Learn from your mistakes and failures by comparing this image to the previous image. Update the intent accordingly and then use the intent to inform your actions. You are responsible for your own analysis, and ensuring the player character progresses through the game. Your assessment of objects isn't always accurate. "
             self.gpt_messages.append(
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/jpeg;base64,{encoded_image}",
-                            "detail": "low"
-                        },
-                        },
-                        {
-                            "type": "text", 
-                            "text": message
-                        },
-                    ],
-                }
-            )
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{encoded_image}",
+                                "detail": "auto"
+                            },
+                            },
+                            {
+                                "type": "text", 
+                                "text": message
+                            },
+                        ],
+                    }
+                )
+            if len(self.gpt_messages) >= 10:
+                self.gpt_messages.pop(0)
+            new_messages = self.gpt_messages
+            new_messages.insert(0, {
+                "role": "user",
+                "content": [
+                    {
+                    "type": "text", 
+                    "text": INITIAL_PROMPT
+                    }
+                ]
+            })
             response = self.open_ai.chat.completions.create(
                 model="gpt-4-vision-preview",
                 messages=self.gpt_messages,
                 max_tokens=3000,
             )
-            self.log(self.gpt_messages)
-            self.gpt_response_text = response.choices[0].message.content
-            self.log("GPT Response: " + self.gpt_response_text)
-            gpt_intent, gpt_previous_actions = self.gpt_response_text.replace("\n\n", "\n").split("\n")[0:2]
+            gpt_response_text = response.choices[0].message.content
+            self.log("GPT Response: " + gpt_response_text)
+            gpt_intent, gpt_previous_actions = gpt_response_text.replace("\n\n", "\n").split("\n")[0:2]
             self.intents.append(gpt_intent)
+            self.gpt_messages.append(
+                    {
+                        "role": "system",
+                        "content": [
+                            {
+                                "type": "text", 
+                                "text": gpt_response_text
+                            },
+                        ],
+                    }
+            )
             gpt_actions = gpt_previous_actions.split(",")
-            self.log(gpt_actions)
             for action in gpt_actions:
-                action_stripped = action.replace(" ", "")
+                action_stripped = action.replace(" ", "").upper()
                 if action_stripped in actions_list:
                     self.upcoming_actions.append(action_stripped)
             self.save_context()
         except Exception as other_error:
             self.log(other_error)
+            pokejoke = self.prompt_gpt_text("Write a very funny pokemon joke Heavily inspired by Norm MacDonald.")
+            self.intents.append("Unfortunately it seems we have receieved an error code from ground control at Open AI, and the current action will be skipped. To lighten the mood, I have one of my famous PokéJokes to tell you all! " + pokejoke)
 
-    def speak(self, text):
-        new_request = threading.Thread(target=self.speak_thread, args=(text,))
-        new_request.start()
+    def speak(self, text, ding=True):
+        if ding:
+            ding_dong = threading.Thread(target=playsound, args=("resources/audio/ding.mp3",))
+            ding_dong.start()
+        whisper_request = threading.Thread(target=self.speak_thread, args=(text,))
+        whisper_request.start()
 
     def speak_thread(self, text, buffer_file=None):
         while self.speaking == True:
@@ -221,9 +261,10 @@ class GptBoy:
 
     def start(self):
         self.running = True
+        self.speak(f"Welcome to GPT Boy. Speech module engaged. This is your captain speaking. Currently it is about {time.strftime('%l:%M%p %Z on %B %d, %Y')} as we are starting a generated playthrough of {self.game_title}. Current settings have us at about {PROMPT_N_SECONDS} seconds between prompting OpenAI for input. All responses, intents, and button presses will be dictated as they are processed. In addition, the current state will be saved every {SAVE_N_SECONDS} seconds. Whenever you hear the chime, a new input is about to begin. Are you ready to start?")
         while self.running:
             if self.speaking == False and len(self.intents) > 0:
-                self.speak(self.intents.pop(0))
+                self.speak("This is your captain speaking. " + self.intents.pop(0))
             if self.current_tick % TICKS_PER_MINUTE == 0:
                 minutes = int(self.current_tick / TICKS_PER_MINUTE)
                 self.log(f"Operational for {minutes} minute(s)")
@@ -234,11 +275,13 @@ class GptBoy:
                 self.press_button(current_action)
                 self.save_state()
                 self.prune_requests()
-            if self.current_tick % (PROMPT_N_SECONDS * TICKS_PER_SECOND) == 0 and self.current_tick >= (30 * TICKS_PER_SECOND):
+            if self.current_tick % (PROMPT_N_SECONDS * TICKS_PER_SECOND) == 0 \
+                and self.current_tick >= (30 * TICKS_PER_SECOND) \
+                and self.speaking == False:
                 rstack_size = len(self.requests)
                 self.log("Running new request thread to OpenAI.")
                 # self.log(f"Rstack size {rstack_size}")
-                new_request = threading.Thread(target=self.prompt_gpt)
+                new_request = threading.Thread(target=self.prompt_gpt_image)
                 new_request.start()
                 self.requests.append(new_request)
             if self.current_tick % (SAVE_N_SECONDS * TICKS_PER_SECOND) == 0 \
@@ -248,4 +291,4 @@ class GptBoy:
 
 if __name__ == "__main__":
     open_ai_key = os.environ.get("OPEN_AI_API_KEY", None)
-    GptBoy(open_ai_key=open_ai_key, rom_path="pokemoncrystal.gbc", sound=False)
+    GptBoy(open_ai_key=open_ai_key, rom_path="pokemonred.gb", sound=False)
